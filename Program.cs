@@ -1,21 +1,25 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Forms;
 using Nefarius.ViGEm.Client;
 using Nefarius.ViGEm.Client.Targets;
 using Nefarius.ViGEm.Client.Targets.Xbox360;
 
 namespace ControllerMapper
 {
-    internal class Program
+    public static class Program
     {
+        public static event Action<bool>? MappingStateChanged;
+
         private const double DEADZONE_OFFSET = 0.15;
         private const double GAMMA = 0.65;
         private const double SENSITIVITY = 1.0;
         private const double MAX_DELTA = 35.0;
 
-        private static IXbox360Controller _controller;
+        private static IXbox360Controller? _controller;
         private static bool _isMappingEnabled = true;
 
         private static int _rawMouseX = 0;
@@ -27,6 +31,33 @@ namespace ControllerMapper
         private static bool _dpadUp, _dpadDown, _dpadLeft, _dpadRight;
         private static byte _triggerL, _triggerR;
         private static bool _isW, _isA, _isS, _isD;
+
+        // --- CUSTOMIZABLE KEYBINDINGS (Scan Codes) ---
+        public static ushort Key_Toggle = 0x3A; // Caps Lock
+        public static ushort Key_W = 0x11;      // W
+        public static ushort Key_A = 0x1E;      // A
+        public static ushort Key_S = 0x1F;      // S
+        public static ushort Key_D = 0x20;      // D
+
+        public static ushort Key_BtnA = 0x39;   // Space
+        public static ushort Key_BtnB = 0x1D;   // Ctrl (Primary)
+        public static ushort Key_BtnB_Alt = 0x2E; // C (Alt)
+        public static ushort Key_BtnX = 0x13;   // R
+        public static ushort Key_BtnY = 0x22;   // G
+
+        public static ushort Key_LB = 0x10;     // Q
+        public static ushort Key_LB_Alt = 0x02; // 1
+        public static ushort Key_RB = 0x12;     // E
+        public static ushort Key_RB_Alt = 0x03; // 2
+
+        public static ushort Key_L3 = 0x2A;     // Left Shift
+        public static ushort Key_R3 = 0x21;     // F
+        public static ushort Key_Start = 0x01;  // Esc
+
+        public static ushort Key_DpadUp = 0x30;    // B
+        public static ushort Key_DpadDown = 0x2F;  // V
+        public static ushort Key_DpadLeft = 0x0F;  // Tab
+        public static ushort Key_DpadRight = 0x14; // T
 
         // --- Native Interception API Direct Imports ---
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -85,16 +116,29 @@ namespace ControllerMapper
         private const ushort FILTER_KEY_ALL = 0xFFFF;
         private const ushort FILTER_MOUSE_ALL = 0xFFFF;
 
+        [STAThread]
         static void Main(string[] args)
         {
             Console.WriteLine("Connecting to ViGEmBus driver...");
             var client = new ViGEmClient();
             _controller = client.CreateXbox360Controller();
             _controller.Connect();
-            Console.WriteLine("Virtual Xbox 360 Controller connected!");
 
             StartControllerOutputThread();
-            StartKernelInterception();
+
+            Task.Run(() => StartKernelInterception());
+
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            Application.Run(new MainForm());
+        }
+
+        public static bool ToggleMapping()
+        {
+            _isMappingEnabled = !_isMappingEnabled;
+            ResetState();
+            MappingStateChanged?.Invoke(_isMappingEnabled);
+            return _isMappingEnabled;
         }
 
         private static void StartKernelInterception()
@@ -105,7 +149,6 @@ namespace ControllerMapper
             interception_set_filter(context, interception_is_mouse, FILTER_MOUSE_ALL);
 
             Console.WriteLine("\n=== KERNEL INTERCEPTION MAPPER ACTIVE ===");
-            Console.WriteLine("Press 'CAPS LOCK' to TOGGLE mapping ON/OFF.\n");
 
             Stroke stroke = new Stroke();
             int device;
@@ -137,14 +180,12 @@ namespace ControllerMapper
             bool isDown = (key.State & 1) == 0; // State 0 = Down, 1 = Up
             ushort code = key.Code;
 
-            // Toggle Mapping via Caps Lock (Scan Code 0x3A)
-            if (code == 0x3A)
+            // Toggle Mapping via Configured Toggle Key
+            if (code == Key_Toggle)
             {
                 if (isDown)
                 {
-                    _isMappingEnabled = !_isMappingEnabled;
-                    Console.WriteLine(_isMappingEnabled ? "[ENABLED] Interception Active" : "[DISABLED] Native KBM Active");
-                    ResetState();
+                    ToggleMapping();
                 }
                 return true;
             }
@@ -153,32 +194,32 @@ namespace ControllerMapper
 
             lock (_stateLock)
             {
-                // WASD
-                if (code == 0x11) _isW = isDown;
-                if (code == 0x1E) _isA = isDown;
-                if (code == 0x1F) _isS = isDown;
-                if (code == 0x20) _isD = isDown;
+                // Dynamic Movement Check
+                if (code == Key_W) _isW = isDown;
+                if (code == Key_A) _isA = isDown;
+                if (code == Key_S) _isS = isDown;
+                if (code == Key_D) _isD = isDown;
 
-                // Buttons
-                if (code == 0x39) _btnA = isDown;                            // Space -> A
-                if (code == 0x2A || code == 0x36) _btnL3 = isDown;           // Shift -> L3
-                if (code == 0x1D || code == 0x2E) _btnB = isDown;           // Ctrl / C -> B
-                if (code == 0x13) _btnX = isDown;                            // R -> X
-                if (code == 0x21) _btnR3 = isDown;                           // F -> R3
-                if (code == 0x22) _btnY = isDown;                            // G -> Y
+                // Dynamic Button Checks
+                if (code == Key_BtnA) _btnA = isDown;
+                if (code == Key_BtnB || code == Key_BtnB_Alt) _btnB = isDown;
+                if (code == Key_BtnX) _btnX = isDown;
+                if (code == Key_BtnY) _btnY = isDown;
+
+                // Bumpers & Sticks
+                if (code == Key_LB || code == Key_LB_Alt) _btnLB = isDown;
+                if (code == Key_RB || code == Key_RB_Alt) _btnRB = isDown;
+                if (code == Key_L3) _btnL3 = isDown;
+                if (code == Key_R3) _btnR3 = isDown;
 
                 // D-Pad
-                if (code == 0x2F || code == 0x32) _dpadDown = isDown;        // V / M -> Down
-                if (code == 0x14) _dpadRight = isDown;                       // T -> Right
-                if (code == 0x30) _dpadUp = isDown;                          // B -> Up
-                if (code == 0x0F) _dpadLeft = isDown;                        // Tab -> Left
+                if (code == Key_DpadDown) _dpadDown = isDown;
+                if (code == Key_DpadRight) _dpadRight = isDown;
+                if (code == Key_DpadUp) _dpadUp = isDown;
+                if (code == Key_DpadLeft) _dpadLeft = isDown;
 
-                // Bumpers
-                if (code == 0x02 || code == 0x10) _btnLB = isDown;           // 1 / Q -> LB
-                if (code == 0x03 || code == 0x12) _btnRB = isDown;           // 2 / E -> RB
-
-                // Menus
-                if (code == 0x01) _btnStart = isDown;                        // Esc -> Start
+                // Menu
+                if (code == Key_Start) _btnStart = isDown;
             }
 
             return true;
@@ -208,7 +249,7 @@ namespace ControllerMapper
             {
                 while (true)
                 {
-                    if (_isMappingEnabled)
+                    if (_isMappingEnabled && _controller != null)
                     {
                         lock (_stateLock)
                         {
@@ -269,7 +310,7 @@ namespace ControllerMapper
             });
         }
 
-        private static void ResetState()
+        public static void ResetState()
         {
             lock (_stateLock)
             {
@@ -279,13 +320,16 @@ namespace ControllerMapper
                 _dpadUp = _dpadDown = _dpadLeft = _dpadRight = false;
                 _triggerL = _triggerR = 0;
 
-                _controller.SetAxisValue(Xbox360Axis.LeftThumbX, 0);
-                _controller.SetAxisValue(Xbox360Axis.LeftThumbY, 0);
-                _controller.SetAxisValue(Xbox360Axis.RightThumbX, 0);
-                _controller.SetAxisValue(Xbox360Axis.RightThumbY, 0);
-                _controller.SetSliderValue(Xbox360Slider.LeftTrigger, 0);
-                _controller.SetSliderValue(Xbox360Slider.RightTrigger, 0);
-                _controller.SubmitReport();
+                if (_controller != null)
+                {
+                    _controller.SetAxisValue(Xbox360Axis.LeftThumbX, 0);
+                    _controller.SetAxisValue(Xbox360Axis.LeftThumbY, 0);
+                    _controller.SetAxisValue(Xbox360Axis.RightThumbX, 0);
+                    _controller.SetAxisValue(Xbox360Axis.RightThumbY, 0);
+                    _controller.SetSliderValue(Xbox360Slider.LeftTrigger, 0);
+                    _controller.SetSliderValue(Xbox360Slider.RightTrigger, 0);
+                    _controller.SubmitReport();
+                }
             }
         }
     }
